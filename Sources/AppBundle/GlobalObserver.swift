@@ -75,6 +75,26 @@ class GlobalObserver {
                     default:
                         runRefreshSession(.globalObserverLeftMouseUp, screenIsDefinitelyUnlocked: true)
                 }
+                guard config.mouseWindowFocus else { return }
+                let point = NSEvent.mouseLocation
+                let workspace = point.monitorApproximation.activeWorkspace
+                _ = workspace.workspaceMonitor.setActiveWorkspace(workspace)
+
+                guard
+                    let windowUnderMouse = point.findIn(
+                        tree: workspace.rootTilingContainer, virtual: false)
+                else {
+                    return
+                }
+
+                do {
+                    let focusedWindow = try await getNativeFocusedWindow()
+                    if focusedWindow == windowUnderMouse {
+                        return
+                    }
+                    windowUnderMouse.nativeFocus()
+                } catch {
+                }
             }
         }
     }
