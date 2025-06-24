@@ -88,7 +88,7 @@ private let modeConfigRootKey = "mode"
 // 1. Does it make sense to have different value
 // 2. Prefer commands and commands flags over toml options if possible
 private let configParser: [String: any ParserProtocol<Config>] = [
-    "after-login-command": Parser(\.afterLoginCommand) { parseCommandOrCommands($0).toParsedToml($1) },
+    "after-login-command": Parser(\.afterLoginCommand, parseAfterLoginCommand),
     "after-startup-command": Parser(\.afterStartupCommand) { parseCommandOrCommands($0).toParsedToml($1) },
 
     "mouse-window-focus": Parser(\.mouseWindowFocus, parseBool),
@@ -121,8 +121,8 @@ private let configParser: [String: any ParserProtocol<Config>] = [
     "indent-for-nested-containers-with-the-same-orientation": Parser(\._indentForNestedContainersWithTheSameOrientation, parseIndentForNestedContainersWithTheSameOrientation),
 ]
 
-private extension ParsedCmd where T == any Command {
-    func toEither() -> Parsed<T> {
+extension ParsedCmd where T == any Command {
+    fileprivate func toEither() -> Parsed<T> {
         return switch self {
             case .cmd(let a):
                 a.info.allowInConfig
@@ -134,10 +134,18 @@ private extension ParsedCmd where T == any Command {
     }
 }
 
-private extension Command {
-    var isMacOsNativeCommand: Bool { // Problem ID-B6E178F2
+extension Command {
+    fileprivate var isMacOsNativeCommand: Bool { // Problem ID-B6E178F2
         self is MacosNativeMinimizeCommand || self is MacosNativeFullscreenCommand
     }
+}
+
+func parseAfterLoginCommand(_ raw: TOMLValueConvertible, _ backtrace: TomlBacktrace) -> ParsedToml<[any Command]> {
+    if let array = raw.array, array.count == 0 {
+        return .success([])
+    }
+    let msg = "after-login-command is deprecated since AeroSpace 0.19.0. https://github.com/nikitabobko/AeroSpace/issues/1482"
+    return .failure(.semantic(backtrace, msg))
 }
 
 func parseCommandOrCommands(_ raw: TOMLValueConvertible) -> Parsed<[any Command]> {
@@ -208,7 +216,7 @@ func parseCommandOrCommands(_ raw: TOMLValueConvertible) -> Parsed<[any Command]
                 These two settings don't play nicely together. 'split' command has no effect when enable-normalization-flatten-containers is disabled.
 
                 My recommendation: keep the normalizations enabled, and prefer 'join-with' over 'split'.
-                """
+                """,
             )]
         }
     }
@@ -217,7 +225,7 @@ func parseCommandOrCommands(_ raw: TOMLValueConvertible) -> Parsed<[any Command]
 
 func parseIndentForNestedContainersWithTheSameOrientation(
     _ raw: TOMLValueConvertible,
-    _ backtrace: TomlBacktrace
+    _ backtrace: TomlBacktrace,
 ) -> ParsedToml<Void> {
     let msg = "Deprecated. Please drop it from the config. See https://github.com/nikitabobko/AeroSpace/issues/96"
     return .failure(.semantic(backtrace, msg))
@@ -243,8 +251,8 @@ extension TOMLValueConvertible {
         let singleKeyError: TomlParseError = .semantic(
             backtrace,
             expectedKey != nil
-                ? "The table is expected to have a single key '\(expectedKey!)'"
-                : "The table is expected to have a single key"
+                ? "The table is expected to have a single key '\(expectedKey.orDie())'"
+                : "The table is expected to have a single key",
         )
         guard let (actualKey, value): (String, TOMLValueConvertible) = table.count == 1 ? table.first : nil else {
             return .failure(singleKeyError)
