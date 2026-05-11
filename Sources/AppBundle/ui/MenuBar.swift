@@ -16,7 +16,7 @@ public func menuBar(viewModel: TrayMenuModel) -> some Scene { // todo should it 
             ForEach(viewModel.workspaces, id: \.name) { workspace in
                 Button {
                     Task {
-                        try await runSession(.menuBarButton, token) { _ = Workspace.get(byName: workspace.name).focusWorkspace() }
+                        try await runLightSession(.menuBarButton, token) { _ = Workspace.get(byName: workspace.name).focusWorkspace() }
                     }
                 } label: {
                     Toggle(isOn: .constant(workspace.isFocused)) {
@@ -26,36 +26,25 @@ public func menuBar(viewModel: TrayMenuModel) -> some Scene { // todo should it 
             }
             Divider()
         }
-        getExperimentalUISettingsMenu(viewModel: viewModel)
+        Button {
+            NSWorkspace.shared.open(URL(string: "https://github.com/sponsors/nikitabobko").orDie())
+            viewModel.sponsorshipMessage = sponsorshipPrompts.randomElement().orDie()
+        } label: {
+            Text("Sponsor AeroSpace on GitHub")
+            Text(viewModel.sponsorshipMessage)
+        }
         Divider()
         Button(viewModel.isEnabled ? "Disable" : "Enable") {
             Task {
-                try await runSession(.menuBarButton, .forceRun) { () throws in
+                try await runLightSession(.menuBarButton, .forceRun) { () throws in
                     _ = try await EnableCommand(args: EnableCmdArgs(rawArgs: [], targetState: .toggle))
                         .run(.defaultEnv, .emptyStdin)
                 }
             }
         }.keyboardShortcut("E", modifiers: .command)
-        let editor = getTextEditorToOpenConfig()
-        Button("Open config in '\(editor.lastPathComponent)'") {
-            let fallbackConfig: URL = FileManager.default.homeDirectoryForCurrentUser.appending(path: configDotfileName)
-            switch findCustomConfigUrl() {
-                case .file(let url):
-                    url.open(with: editor)
-                case .noCustomConfigExists:
-                    _ = try? FileManager.default.copyItem(atPath: defaultConfigUrl.path, toPath: fallbackConfig.path)
-                    fallbackConfig.open(with: editor)
-                case .ambiguousConfigError:
-                    fallbackConfig.open(with: editor)
-            }
-        }.keyboardShortcut(",", modifiers: .command)
-        if let token: RunSessionGuard = .isServerEnabled {
-            Button("Reload config") {
-                Task {
-                    try await runSession(.menuBarButton, token) { _ = reloadConfig() }
-                }
-            }.keyboardShortcut("R", modifiers: .command)
-        }
+        getExperimentalUISettingsMenu(viewModel: viewModel)
+        openConfigButton()
+        reloadConfigButton()
         Button("Quit \(aeroSpaceAppName)") {
             Task {
                 defer { terminateApp() }
@@ -64,20 +53,57 @@ public func menuBar(viewModel: TrayMenuModel) -> some Scene { // todo should it 
         }.keyboardShortcut("Q", modifiers: .command)
     } label: {
         if viewModel.isEnabled {
-            switch viewModel.experimentalUISettings.displayStyle {
-                case .monospacedText:
-                    MenuBarLabel(viewModel.trayText)
-                case .systemText:
-                    MenuBarLabel(viewModel.trayText, textStyle: .system)
-                case .squares:
-                    MenuBarLabel(viewModel.trayText, trayItems: viewModel.trayItems)
-                case .i3:
-                    MenuBarLabel(viewModel.trayText, trayItems: viewModel.trayItems, workspaces: viewModel.workspaces)
-            }
+            MenuBarLabel().environmentObject(viewModel)
         } else {
             Image(systemName: "pause.circle.fill")
                 .resizable()
                 .aspectRatio(contentMode: .fit)
+        }
+    }
+}
+
+@MainActor @ViewBuilder
+func openConfigButton(showShortcutGroup: Bool = false) -> some View {
+    let editor = getTextEditorToOpenConfig()
+    let button = Button("Open config in '\(editor.lastPathComponent)'") {
+        let fallbackConfig: URL = FileManager.default.homeDirectoryForCurrentUser.appending(path: configDotfileName)
+        switch findCustomConfigUrl() {
+            case .file(let url):
+                url.open(with: editor)
+            case .noCustomConfigExists:
+                _ = try? FileManager.default.copyItem(atPath: defaultConfigUrl.path, toPath: fallbackConfig.path)
+                fallbackConfig.open(with: editor)
+            case .ambiguousConfigError:
+                fallbackConfig.open(with: editor)
+        }
+    }.keyboardShortcut(",", modifiers: .command)
+    switch showShortcutGroup {
+        case true: shortcutGroup(label: Text("⌘ ,"), content: button)
+        case false: button
+    }
+}
+
+@MainActor @ViewBuilder
+func reloadConfigButton(showShortcutGroup: Bool = false) -> some View {
+    if let token: RunSessionGuard = .isServerEnabled {
+        let button = Button("Reload config") {
+            Task {
+                try await runLightSession(.menuBarButton, token) { _ = try await reloadConfig() }
+            }
+        }.keyboardShortcut("R", modifiers: .command)
+        switch showShortcutGroup {
+            case true: shortcutGroup(label: Text("⌘ R"), content: button)
+            case false: button
+        }
+    }
+}
+
+func shortcutGroup(label: some View, content: some View) -> some View {
+    GroupBox {
+        VStack(alignment: .trailing, spacing: 6) {
+            label
+                .foregroundStyle(Color.secondary)
+            content
         }
     }
 }

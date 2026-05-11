@@ -4,8 +4,9 @@ import ISSoundAdditions
 
 struct VolumeCommand: Command {
     let args: VolumeCmdArgs
+    /*conforms*/ let shouldResetClosedWindowsCache = false
 
-    func run(_ env: CmdEnv, _ io: CmdIo) -> Bool {
+    func run(_ env: CmdEnv, _ io: CmdIo) -> BinaryExitCode {
         switch args.action.val {
             case .up:
                 Sound.output.increaseVolume(by: 0.0625, autoMuteUnmute: true)
@@ -20,6 +21,9 @@ struct VolumeCommand: Command {
             case .set(let int):
                 Sound.output.setVolume(Float(int) / 100, autoMuteUnmute: true)
         }
-        return true
+        if args.gui, let volume = try? Sound.output.readVolume() {
+            VolumePanel.shared.update(with: Sound.output.isMuted ? 0 : volume)
+        }
+        return .succ
     }
 }

@@ -1,6 +1,7 @@
 import AppKit
 import Common
 import HotKey
+import OrderedCollections
 
 func getDefaultConfigUrlFromProject() -> URL {
     var url = URL(filePath: #filePath)
@@ -22,7 +23,7 @@ var defaultConfigUrl: URL {
     }
 }
 @MainActor let defaultConfig: Config = {
-    let parsedConfig = parseConfig((try? String(contentsOf: defaultConfigUrl)).orDie())
+    let parsedConfig = parseConfig(Result { try String(contentsOf: defaultConfigUrl, encoding: .utf8) }.getOrDie())
     if !parsedConfig.errors.isEmpty {
         die("Can't parse default config: \(parsedConfig.errors)")
     }
@@ -33,6 +34,7 @@ var defaultConfigUrl: URL {
 
 struct Config: ConvenienceCopyable {
     var mouseWindowFocus: Bool = false
+    var configVersion: Int = 1
     var afterLoginCommand: [any Command] = []
     var afterStartupCommand: [any Command] = []
     var _indentForNestedContainersWithTheSameOrientation: Void = ()
@@ -41,9 +43,11 @@ struct Config: ConvenienceCopyable {
     var defaultRootContainerLayout: Layout = .tiles
     var defaultRootContainerOrientation: DefaultContainerOrientation = .auto
     var startAtLogin: Bool = false
+    var autoReloadConfig: Bool = false
     var automaticallyUnhideMacosHiddenApps: Bool = false
     var accordionPadding: Int = 30
     var enableNormalizationOppositeOrientationForNestedContainers: Bool = true
+    var persistentWorkspaces: OrderedSet<String> = []
     var execOnWorkspaceChange: [String] = [] // todo deprecate
     var keyMapping = KeyMapping()
     var execConfig: ExecConfig = ExecConfig()
@@ -56,8 +60,7 @@ struct Config: ConvenienceCopyable {
     var workspaceToMonitorForceAssignment: [String: [MonitorDescription]] = [:]
     var modes: [String: Mode] = [:]
     var onWindowDetected: [WindowDetectedCallback] = []
-
-    var preservedWorkspaceNames: [String] = []
+    var onModeChanged: [any Command] = []
 }
 
 enum DefaultContainerOrientation: String {

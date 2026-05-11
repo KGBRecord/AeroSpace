@@ -3,8 +3,7 @@ import Common
 
 final class MacWindow: Window {
     let macApp: MacApp
-    // todo take into account monitor proportions
-    private var prevUnhiddenEmulationPositionRelativeToWorkspaceAssignedRect: CGPoint?
+    private var prevUnhiddenProportionalPositionInsideWorkspaceRect: CGPoint?
 
     @MainActor
     private init(_ id: UInt32, _ actor: MacApp, lastFloatingSize: CGSize?, parent: NonLeafTreeNodeObject, adaptiveWeight: CGFloat, index: Int) {
@@ -53,22 +52,14 @@ final class MacWindow: Window {
     //     return "Window(\(description))"
     // }
 
-    @MainActor // todo swift is stupid
-    func isWindowHeuristic() async throws -> Bool { // todo cache
-        try await macApp.isWindowHeuristic(windowId)
+    func isWindowHeuristic(_ windowLevel: MacOsWindowLevel?) async throws -> Bool { // todo cache
+        try await macApp.isWindowHeuristic(windowId, windowLevel)
     }
 
-    @MainActor // todo swift is stupid
-    func isDialogHeuristic() async throws -> Bool { // todo cache
-        try await macApp.isDialogHeuristic(windowId)
+    func isDialogHeuristic(_ windowLevel: MacOsWindowLevel?) async throws -> Bool { // todo cache
+        try await macApp.isDialogHeuristic(windowId, windowLevel)
     }
 
-    @MainActor
-    func getAxUiElementWindowType() async throws -> AxUiElementWindowType {
-        try await macApp.getAxUiElementWindowType(windowId)
-    }
-
-    @MainActor // todo swift is stupid
     func dumpAxInfo() async throws -> [String: Json] {
         try await macApp.dumpWindowAxInfo(windowId: windowId)
     }
@@ -88,7 +79,7 @@ final class MacWindow: Window {
         if MacWindow.allWindowsMap.removeValue(forKey: windowId) == nil {
             return
         }
-        if !skipClosedWindowsCache { cacheClosedWindowIfNeeded(window: self) }
+        if !skipClosedWindowsCache { cacheClosedWindowIfNeeded() }
         let parent = unbindFromParent().parent
         let deadWindowWorkspace = parent.nodeWorkspace
         let focus = focus
@@ -125,16 +116,21 @@ final class MacWindow: Window {
         macApp.closeAndUnregisterAxWindow(windowId)
     }
 
+    // todo it's part of the window layout and should be moved to layoutRecursive.swift
     @MainActor
     func hideInCorner(_ corner: OptimalHideCorner) async throws {
         guard let nodeMonitor else { return }
-        // Don't accidentally override prevUnhiddenEmulationPosition in case of subsequent
-        // `hideEmulation` calls
+        // Don't accidentally override prevUnhiddenEmulationPosition in case of subsequent `hideInCorner` calls
         if !isHiddenInCorner {
-            guard let topLeftCorner = try await getAxTopLeftCorner() else { return }
-            guard let nodeWorkspace else { return } // hiding only makes sense for workspace windows
-            prevUnhiddenEmulationPositionRelativeToWorkspaceAssignedRect =
-                topLeftCorner - nodeWorkspace.workspaceMonitor.rect.topLeftCorner
+            guard let windowRect = try await getAxRect() else { return }
+            // Check for isHiddenInCorner for the second time because of the suspension point above
+            if !isHiddenInCorner {
+                let topLeftCorner = windowRect.topLeftCorner
+                let monitorRect = windowRect.center.monitorApproximation.rect // Similar to layoutFloatingWindow. Non idempotent
+                let absolutePoint = topLeftCorner - monitorRect.topLeftCorner
+                prevUnhiddenProportionalPositionInsideWorkspaceRect =
+                    CGPoint(x: absolutePoint.x / monitorRect.width, y: absolutePoint.y / monitorRect.height)
+            }
         }
         let p: CGPoint
         switch corner {
@@ -142,20 +138,20 @@ final class MacWindow: Window {
                 guard let s = try await getAxSize() else { fallthrough }
                 // Zoom will jump off if you do one pixel offset https://github.com/nikitabobko/AeroSpace/issues/527
                 // todo this ad hoc won't be necessary once I implement optimization suggested by Zalim
-                let onePixelOffset = macApp.isZoom ? .zero : CGPoint(x: 1, y: -1)
+                let onePixelOffset = macApp.appId == .zoom ? .zero : CGPoint(x: 1, y: -1)
                 p = nodeMonitor.visibleRect.bottomLeftCorner + onePixelOffset + CGPoint(x: -s.width, y: 0)
             case .bottomRightCorner:
                 // Zoom will jump off if you do one pixel offset https://github.com/nikitabobko/AeroSpace/issues/527
                 // todo this ad hoc won't be necessary once I implement optimization suggested by Zalim
-                let onePixelOffset = macApp.isZoom ? .zero : CGPoint(x: 1, y: 1)
+                let onePixelOffset = macApp.appId == .zoom ? .zero : CGPoint(x: 1, y: 1)
                 p = nodeMonitor.visibleRect.bottomRightCorner - onePixelOffset
         }
-        setAxTopLeftCorner(p)
+        setAxFrame(p, nil)
     }
 
     @MainActor
     func unhideFromCorner() {
-        guard let prevUnhiddenEmulationPositionRelativeToWorkspaceAssignedRect else { return }
+        guard let prevUnhiddenProportionalPositionInsideWorkspaceRect else { return }
         guard let nodeWorkspace else { return } // hiding only makes sense for workspace windows
         guard let parent else { return }
 
@@ -163,42 +159,38 @@ final class MacWindow: Window {
             // Just a small optimization to avoid unnecessary AX calls for non floating windows
             // Tiling windows should be unhidden with layoutRecursive anyway
             case .floatingWindow:
-                setAxTopLeftCorner(nodeWorkspace.workspaceMonitor.rect.topLeftCorner + prevUnhiddenEmulationPositionRelativeToWorkspaceAssignedRect)
+                let workspaceRect = nodeWorkspace.workspaceMonitor.rect
+                var newX = workspaceRect.topLeftX + workspaceRect.width * prevUnhiddenProportionalPositionInsideWorkspaceRect.x
+                var newY = workspaceRect.topLeftY + workspaceRect.height * prevUnhiddenProportionalPositionInsideWorkspaceRect.y
+                // todo we probably should replace lastFloatingSize with proper floating window sizing
+                // https://github.com/nikitabobko/AeroSpace/issues/1519
+                let windowWidth = lastFloatingSize?.width ?? 0
+                let windowHeight = lastFloatingSize?.height ?? 0
+                newX = newX.coerce(in: workspaceRect.minX ... max(workspaceRect.minX, workspaceRect.maxX - windowWidth))
+                newY = newY.coerce(in: workspaceRect.minY ... max(workspaceRect.minY, workspaceRect.maxY - windowHeight))
+
+                setAxFrame(CGPoint(x: newX, y: newY), nil)
             case .macosNativeFullscreenWindow, .macosNativeHiddenAppWindow, .macosNativeMinimizedWindow,
                  .macosPopupWindow, .tiling, .rootTilingContainer, .shimContainerRelation: break
         }
 
-        self.prevUnhiddenEmulationPositionRelativeToWorkspaceAssignedRect = nil
+        self.prevUnhiddenProportionalPositionInsideWorkspaceRect = nil
     }
 
     override var isHiddenInCorner: Bool {
-        prevUnhiddenEmulationPositionRelativeToWorkspaceAssignedRect != nil
+        prevUnhiddenProportionalPositionInsideWorkspaceRect != nil
     }
 
-    @MainActor // todo swift is stupid
     override func getAxSize() async throws -> CGSize? {
         try await macApp.getAxSize(windowId)
-    }
-
-    override func setAxTopLeftCorner(_ point: CGPoint) {
-        macApp.setAxTopLeftCorner(windowId, point)
     }
 
     override func setAxFrame(_ topLeft: CGPoint?, _ size: CGSize?) {
         macApp.setAxFrame(windowId, topLeft, size)
     }
 
-    @MainActor // todo swift is stupid
-    override func setAxFrameBlocking(_ topLeft: CGPoint?, _ size: CGSize?) async throws {
+    func setAxFrameBlocking(_ topLeft: CGPoint?, _ size: CGSize?) async throws {
         try await macApp.setAxFrameBlocking(windowId, topLeft, size)
-    }
-
-    override func setSizeAsync(_ size: CGSize) {
-        macApp.setAxSize(windowId, size)
-    }
-
-    override func getAxTopLeftCorner() async throws -> CGPoint? {
-        try await macApp.getAxTopLeftCorner(windowId)
     }
 
     override func getAxRect() async throws -> Rect? {
@@ -207,7 +199,7 @@ final class MacWindow: Window {
 }
 
 extension Window {
-    @MainActor // todo swift is stupid
+    @MainActor
     func relayoutWindow(on workspace: Workspace, forceTile: Bool = false) async throws {
         let data = forceTile
             ? unbindAndGetBindingDataForNewTilingWindow(workspace, window: self)
@@ -217,9 +209,10 @@ extension Window {
 }
 
 // The function is private because it's unsafe. It leaves the window in unbound state
-@MainActor // todo swift is stupid
+@MainActor
 private func unbindAndGetBindingDataForNewWindow(_ windowId: UInt32, _ macApp: MacApp, _ workspace: Workspace, window: Window?) async throws -> BindingData {
-    switch try await macApp.getAxUiElementWindowType(windowId) {
+    let windowLevel = getWindowLevel(for: windowId)
+    return switch try await macApp.getAxUiElementWindowType(windowId, windowLevel) {
         case .popup: BindingData(parent: macosPopupWindowsContainer, adaptiveWeight: WEIGHT_AUTO, index: INDEX_BIND_LAST)
         case .dialog: BindingData(parent: workspace, adaptiveWeight: WEIGHT_AUTO, index: INDEX_BIND_LAST)
         case .window: unbindAndGetBindingDataForNewTilingWindow(workspace, window: window)
@@ -260,6 +253,12 @@ func tryOnWindowDetected(_ window: Window) async throws {
 
 @MainActor
 private func onWindowDetected(_ window: Window) async throws {
+    broadcastEvent(.windowDetected(
+        windowId: window.windowId,
+        workspace: window.nodeWorkspace?.name,
+        appBundleId: window.app.rawAppBundleId,
+        appName: window.app.name,
+    ))
     for callback in config.onWindowDetected where try await callback.matches(window) {
         _ = try await callback.run.runCmdSeq(.defaultEnv.copy(\.windowId, window.windowId), .emptyStdin)
         if !callback.checkFurtherCallbacks {
@@ -274,13 +273,13 @@ extension WindowDetectedCallback {
         if let startupMatcher = matcher.duringAeroSpaceStartup, startupMatcher != isStartup {
             return false
         }
-        if let regex = matcher.windowTitleRegexSubstring, !(try await window.title).contains(regex) {
+        if let regex = matcher.windowTitleRegexSubstring, !(try await window.title).contains(caseInsensitiveRegex: regex) {
             return false
         }
-        if let appId = matcher.appId, appId != window.app.bundleId {
+        if let appId = matcher.appId, appId != window.app.rawAppBundleId {
             return false
         }
-        if let regex = matcher.appNameRegexSubstring, !(window.app.name ?? "").contains(regex) {
+        if let regex = matcher.appNameRegexSubstring, !(window.app.name ?? "").contains(caseInsensitiveRegex: regex) {
             return false
         }
         if let workspace = matcher.workspace, workspace != window.nodeWorkspace?.name {
