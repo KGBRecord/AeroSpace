@@ -28,6 +28,7 @@ if /bin/test -z "${NUKE_PATH:-}"; then
     add-optional-dep-to-bin bundle # build-docs.sh
     add-optional-dep-to-bin bundler # build-docs.sh
     add-optional-dep-to-bin xcbeautify # build-release.sh
+    add-optional-dep-to-bin jenv # java toolchain
     add-optional-dep-to-bin git
     add-optional-dep-to-bin swift
     add-optional-dep-to-bin swiftly
@@ -35,6 +36,14 @@ if /bin/test -z "${NUKE_PATH:-}"; then
     export PATH="${PWD}/.deps/bin:/bin:/usr/bin"
     chmod +x .deps/bin/*
     export NUKE_PATH=1
+fi
+
+# Keep Java resolution deterministic in non-interactive scripts.
+# If jenv is available, let it inject shims and honor .java-version.
+if /usr/bin/which jenv &> /dev/null; then
+    export JENV_SHELL=bash
+    export JENV_SKIP_REHASH=1
+    eval "$(jenv init - --no-rehash)"
 fi
 
 swift() {
