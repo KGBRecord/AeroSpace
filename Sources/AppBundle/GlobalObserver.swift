@@ -71,7 +71,9 @@ enum GlobalObserver {
                     // Detect close button clicks for unfocused windows. Yes, kAXUIElementDestroyedNotification is that unreliable
                     //  And trigger new window detection that could be delayed due to mouseDown event
                     default:
-                        scheduleCancellableCompleteRefreshSession(.globalObserverLeftMouseUp)
+                        if !config.mouseWindowFocus {
+                            scheduleCancellableCompleteRefreshSession(.globalObserverLeftMouseUp)
+                        }
                 }
                 guard config.mouseWindowFocus else { return }
                 let point = NSEvent.mouseLocation
@@ -82,17 +84,17 @@ enum GlobalObserver {
                     let windowUnderMouse = point.findIn(
                         tree: workspace.rootTilingContainer, virtual: false)
                 else {
+                    scheduleCancellableCompleteRefreshSession(.globalObserverLeftMouseUp)
                     return
                 }
 
-                do {
-                    let focusedWindow = try await getNativeFocusedWindow()
-                    if focusedWindow == windowUnderMouse {
-                        return
-                    }
-                    windowUnderMouse.nativeFocus()
-                } catch {
+                // Avoid expensive AX focused-window lookup on every click.
+                // If tracked focus already points to the same window, keep previous behavior and refresh.
+                if focus.windowOrNil == windowUnderMouse {
+                    scheduleCancellableCompleteRefreshSession(.globalObserverLeftMouseUp)
+                    return
                 }
+                windowUnderMouse.nativeFocus()
             }
         }
     }
